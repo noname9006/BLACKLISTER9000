@@ -1,200 +1,288 @@
 import fs from 'fs';
 
-// blacklister3.js
-// - Reads ref_codes.csv (expected sorted by issuer address)
-// - Detects issuers who have at least 2 codes where the difference between
-//   their updated_at timestamps is less than 5 minutes
-// - When detected, exports the issuer address and all its invitees (used_by)
-//   into bl3.csv as a single lowercase-address column
-
-// Configuration
-const INPUT_CSV = 'ref_codes.csv';
-const OUTPUT_CSV = 'bl3.csv';
-const TIME_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-
+// Function to check if an address is a null/zero address
 function isNullAddress(address) {
     if (!address || typeof address !== 'string') return true;
-    const clean = address.toLowerCase().replace(/^0x/, '');
-    return clean.length < 40 || /^0+$/.test(clean);
+    
+    // Remove '0x' prefix and check if it's all zeros or too short
+    const cleanAddress = address.toLowerCase().replace('0x', '');
+    
+    // Check if it's all zeros, empty, or less than 40 characters (proper ETH address length)
+    return cleanAddress.length < 40 || /^0+$/.test(cleanAddress);
 }
 
-// Simple CSV parser that handles basic quoted values
-function parseCSV(path) {
-    if (!fs.existsSync(path)) return [];
-    const raw = fs.readFileSync(path, 'utf8');
-    const lines = raw.split(/\r?\n/).filter(l => l.trim() !== '');
-    if (lines.length === 0) return [];
-    const headers = splitCSVLine(lines[0]);
-    const rows = [];
-    for (let i = 1; i < lines.length; i++) {
-        const values = splitCSVLine(lines[i]);
+// Function to parse CSV files
+function parseCSV(filePath) {
+    if (!fs.existsSync(filePath)) {
+        console.error(`Error: File ${filePath} does not exist`);
+        return [];
+    }
+    
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.trim().split('\n');
+    if (lines.length === 0) {
+        console.error(`Error: File ${filePath} is empty`);
+        return [];
+    }
+    
+    const headers = lines[0].split(',').map(header => header.trim());
+    
+    return lines.slice(1).map(line => {
+        const values = line.split(',').map(value => value.trim());
         const row = {};
-        for (let j = 0; j < headers.length; j++) {
-            row[headers[j].trim()] = (values[j] !== undefined) ? values[j].trim() : '';
-        }
-        rows.push(row);
+        headers.forEach((header, index) => {
+            row[header] = values[index] || '';
+        });
+        return row;
+    });
+}
+
+// Function to write CSV file
+function writeCSV(filePath, data, headers) {
+    const csvContent = [
+        headers.join(','),
+        ...data.map(row => headers.map(header => row[header] || '').join(','))
+    ].join('\n');
+    
+    fs.writeFileSync(filePath, csvContent, 'utf8');
+}
+
+// Function to parse date string and return Date object
+function parseDate(dateString) {
+    if (!dateString) return null;
+    
+    // Try multiple date formats
+    const formats = [
+        // ISO format
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+        // Date only
+        /^\d{4}-\d{2}-\d{2}/,
+        // Timestamp
+        /^\d{10,13}$/
+    ];
+    
+    // Check if it's a timestamp (seconds or milliseconds)
+    if (/^\d{10,13}$/.test(dateString)) {
+        const timestamp = parseInt(dateString);
+        // If it's in seconds, convert to milliseconds
+        return new Date(timestamp < 10000000000 ? timestamp * 1000 : timestamp);
     }
-    return rows;
+    
+    // Try parsing as ISO date
+    const date = new Date(dateString);
+    return isNaN(date.getTime()) ? null : date;
 }
 
-// Splits a single CSV line into values (basic support for quoted fields)
-function splitCSVLine(line) {
-    const values = [];
-    let cur = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-            // Peek next char for double-quote escape
-            if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
-                cur += '"';
-                i++; // skip escaped quote
-            } else {
-                inQuotes = !inQuotes;
-            }
-        } else if (ch === ',' && !inQuotes) {
-            values.push(cur);
-            cur = '';
-        } else {
-            cur += ch;
-        }
-    }
-    values.push(cur);
-    return values;
-}
-
-// Safely parse a timestamp field into milliseconds since epoch
-function parseTime(value) {
-    if (!value) return NaN;
-    // Trim and try direct Date.parse
-    const s = String(value).trim();
-    const num = Number(s);
-    if (!Number.isNaN(num) && num > 0) return num; // already epoch ms or s
-    const parsed = Date.parse(s);
-    if (!Number.isNaN(parsed)) return parsed;
-    // Try parsing as seconds since epoch
-    if (!Number.isNaN(num) && num > 0) return num * 1000;
-    return NaN;
-}
-
-function writeSingleColumnCSV(path, values, header = 'address') {
-    const lines = [header, ...values];
-    fs.writeFileSync(path, lines.join('\n'), 'utf8');
-}
-
-function main() {
+// Main analysis function
+function detectSuspiciousIssuers() {
     try {
-        if (!fs.existsSync(INPUT_CSV)) {
-            console.error(`Input file not found: ${INPUT_CSV}`);
+        const startTime = Date.now();
+        console.log('Starting suspicious issuer detection...');
+        console.log('Target: Issuers with 2+ codes issued within 5 minutes');
+        console.log('Cutoff date: 2025-07-07');
+        
+        // Read ref_codes.csv
+        console.log('Reading ref_codes.csv...');
+        const refCodes = parseCSV('ref_codes.csv');
+        
+        if (refCodes.length === 0) {
+            console.error('Error: No data found in ref_codes.csv');
             return;
         }
-
-        const rows = parseCSV(INPUT_CSV);
-        if (rows.length === 0) {
-            console.error(`No rows parsed from ${INPUT_CSV}`);
+        
+        console.log(`Loaded ${refCodes.length} referral codes`);
+        
+        // Check available columns
+        const headers = Object.keys(refCodes[0]);
+        console.log('Available columns:', headers.join(', '));
+        
+        // Define cutoff date (2025-07-07)
+        const cutoffDate = new Date('2025-07-07T00:00:00Z');
+        console.log('Cutoff date:', cutoffDate.toISOString());
+        
+        // Process and filter data
+        console.log('Processing referral codes...');
+        
+        const validCodes = [];
+        let nullAddressSkipped = 0;
+        let beforeCutoffSkipped = 0;
+        let invalidDateSkipped = 0;
+        
+        refCodes.forEach((code, index) => {
+            const issuer = code['issued_by'] ? code['issued_by'].toLowerCase().trim() : '';
+            const user = code['used_by'] ? code['used_by'].toLowerCase().trim() : '';
+            
+            // Skip null addresses
+            if (isNullAddress(issuer)) {
+                nullAddressSkipped++;
+                return;
+            }
+            
+            // Skip if user is null (we need valid invitee)
+            if (isNullAddress(user)) {
+                nullAddressSkipped++;
+                return;
+            }
+            
+            // Parse updated_at date
+            const updatedAtStr = code['updated_at'] || code['created_at'] || code['timestamp'] || code['date'] || '';
+            const updatedAt = parseDate(updatedAtStr);
+            
+            if (!updatedAt) {
+                invalidDateSkipped++;
+                console.log(`Warning: Invalid date format at row ${index + 1}: "${updatedAtStr}"`);
+                return;
+            }
+            
+            // Check if after cutoff date
+            if (updatedAt < cutoffDate) {
+                beforeCutoffSkipped++;
+                return;
+            }
+            
+            validCodes.push({
+                issuer: issuer,
+                user: user,
+                updated_at: updatedAt,
+                original_updated_at: updatedAtStr,
+                row_index: index + 1
+            });
+        });
+        
+        console.log(`\nFiltering results:`);
+        console.log(`  - Valid codes after ${cutoffDate.toDateString()}: ${validCodes.length}`);
+        console.log(`  - Skipped (null addresses): ${nullAddressSkipped}`);
+        console.log(`  - Skipped (before cutoff): ${beforeCutoffSkipped}`);
+        console.log(`  - Skipped (invalid dates): ${invalidDateSkipped}`);
+        
+        if (validCodes.length === 0) {
+            console.log('No valid codes found after filtering. Exiting.');
             return;
         }
-
-        // Determine timestamp column: prefer updated_at, fallbacks
-        const candidateTimeCols = ['updated_at', 'updatedAt', 'timestamp', 'updated', 'created_at', 'createdAt', 'date'];
-        const headerKeys = Object.keys(rows[0]);
-        let timeCol = null;
-        for (const c of candidateTimeCols) {
-            if (headerKeys.includes(c)) { timeCol = c; break; }
-        }
-        if (!timeCol) {
-            // pick any column that looks like a timestamp name
-            timeCol = headerKeys.find(h => /updated|time|date|timestamp/i.test(h)) || headerKeys[0];
-            console.warn(`No explicit updated_at column found, using '${timeCol}' as timestamp column`);
-        } else {
-            console.log(`Using timestamp column: ${timeCol}`);
-        }
-
-        // Determine issuer and invitee (used_by) columns (flexible)
-        const issuerCols = ['issued_by', 'issuer', 'referrer', 'owner'];
-        const usedCols = ['used_by', 'user', 'invitee', 'wallet', 'wallet_address'];
-
-        const issuerCol = headerKeys.find(h => issuerCols.includes(h)) || headerKeys.find(h => /issue|issuer|issued_by|referrer/i.test(h)) || 'issued_by';
-        const usedCol = headerKeys.find(h => usedCols.includes(h)) || headerKeys.find(h => /used_by|user|invitee|wallet/i.test(h)) || 'used_by';
-
-        console.log(`Detected issuer column: ${issuerCol}, invitee column: ${usedCol}`);
-
-        // Group rows by issuer
-        const groups = new Map(); // issuer -> [{time, used}]
-
-        for (const r of rows) {
-            const issuerRaw = (r[issuerCol] || '').trim();
-            const usedRaw = (r[usedCol] || '').trim();
-
-            if (!issuerRaw) continue;
-            const issuer = issuerRaw.toLowerCase();
-            if (isNullAddress(issuer)) continue;
-
-            const timeVal = parseTime(r[timeCol]);
-            if (Number.isNaN(timeVal)) continue; // ignore rows without parseable time
-
-            if (!groups.has(issuer)) groups.set(issuer, []);
-            groups.get(issuer).push({ time: timeVal, used: (usedRaw || '').toLowerCase() });
-        }
-
-        console.log(`Grouped into ${groups.size} issuers`);
-
-        const suspects = new Set();
-        const suspectInvitees = new Map(); // issuer -> Set(invitees)
-
-        // For each issuer, sort by time and look for any two entries within the TIME_WINDOW_MS
-        for (const [issuer, entries] of groups) {
-            if (entries.length < 2) continue;
-            // sort ascending by time
-            entries.sort((a, b) => a.time - b.time);
-
-            let found = false;
-            for (let i = 0; i < entries.length - 1; i++) {
-                const t1 = entries[i].time;
-                // check ahead until outside window (handles cases where non-adjacent are within window)
-                for (let j = i + 1; j < entries.length; j++) {
-                    const t2 = entries[j].time;
-                    if (t2 - t1 <= TIME_WINDOW_MS) {
-                        found = true;
-                        break;
+        
+        // Group by issuer and sort by updated_at
+        console.log('Grouping codes by issuer...');
+        const issuerGroups = new Map();
+        
+        validCodes.forEach(code => {
+            if (!issuerGroups.has(code.issuer)) {
+                issuerGroups.set(code.issuer, []);
+            }
+            issuerGroups.get(code.issuer).push(code);
+        });
+        
+        // Sort each issuer's codes by updated_at
+        issuerGroups.forEach(codes => {
+            codes.sort((a, b) => a.updated_at.getTime() - b.updated_at.getTime());
+        });
+        
+        console.log(`Found ${issuerGroups.size} unique issuers`);
+        
+        // Detect suspicious issuers (2+ codes within 5 minutes)
+        console.log('Detecting suspicious timing patterns...');
+        
+        const suspiciousIssuers = new Set();
+        const suspiciousDetails = [];
+        const FIVE_MINUTES_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
+        
+        issuerGroups.forEach((codes, issuer) => {
+            if (codes.length < 2) return;
+            
+            // Check for any pair of codes within 5 minutes
+            for (let i = 0; i < codes.length - 1; i++) {
+                for (let j = i + 1; j < codes.length; j++) {
+                    const timeDiff = codes[j].updated_at.getTime() - codes[i].updated_at.getTime();
+                    
+                    if (timeDiff <= FIVE_MINUTES_MS) {
+                        suspiciousIssuers.add(issuer);
+                        
+                        const timeDiffSeconds = Math.floor(timeDiff / 1000);
+                        const timeDiffMinutes = Math.floor(timeDiffSeconds / 60);
+                        const remainingSeconds = timeDiffSeconds % 60;
+                        
+                        suspiciousDetails.push({
+                            issuer: issuer,
+                            total_codes: codes.length,
+                            time_diff_ms: timeDiff,
+                            time_diff_display: `${timeDiffMinutes}m ${remainingSeconds}s`,
+                            code1_time: codes[i].updated_at.toISOString(),
+                            code2_time: codes[j].updated_at.toISOString(),
+                            code1_user: codes[i].user,
+                            code2_user: codes[j].user
+                        });
+                        
+                        break; // Found suspicious pattern for this issuer
                     }
-                    // if difference already greater than window, break inner loop
-                    if (t2 - t1 > TIME_WINDOW_MS) break;
                 }
-                if (found) break;
+                if (suspiciousIssuers.has(issuer)) break;
             }
-
-            if (found) {
-                suspects.add(issuer);
-                if (!suspectInvitees.has(issuer)) suspectInvitees.set(issuer, new Set());
-                entries.forEach(e => {
-                    if (e.used && !isNullAddress(e.used) && e.used !== issuer) {
-                        suspectInvitees.get(issuer).add(e.used);
-                    }
-                });
-            }
+        });
+        
+        console.log(`\nSuspicious timing detection results:`);
+        console.log(`  - Suspicious issuers found: ${suspiciousIssuers.size}`);
+        
+        if (suspiciousIssuers.size === 0) {
+            console.log('No suspicious issuers detected. Creating empty bl3.csv file.');
+            writeCSV('bl3.csv', [], ['address']);
+            return;
         }
-
-        console.log(`Detected ${suspects.size} issuers with >1 codes within 5 minutes`);
-
-        // Build final list: for each suspect issuer include issuer and its invitees
-        const outputSet = new Set();
-        for (const issuer of suspects) {
-            outputSet.add(issuer.toLowerCase());
-            const invs = suspectInvitees.get(issuer) || new Set();
-            invs.forEach(u => outputSet.add(u.toLowerCase()));
-        }
-
-        const outputList = Array.from(outputSet);
-        outputList.sort();
-
-        writeSingleColumnCSV(OUTPUT_CSV, outputList, 'address');
-
-        console.log(`Wrote ${outputList.length} addresses to ${OUTPUT_CSV}`);
-    } catch (err) {
-        console.error('Error:', err && err.message ? err.message : err);
-        console.error(err && err.stack ? err.stack : '');
+        
+        // Display suspicious patterns
+        console.log('\nSuspicious timing patterns detected:');
+        suspiciousDetails.forEach((detail, index) => {
+            console.log(`${index + 1}. Issuer: ${detail.issuer}`);
+            console.log(`   Total codes: ${detail.total_codes}`);
+            console.log(`   Time difference: ${detail.time_diff_display}`);
+            console.log(`   Code 1: ${detail.code1_time} -> ${detail.code1_user}`);
+            console.log(`   Code 2: ${detail.code2_time} -> ${detail.code2_user}`);
+            console.log('');
+        });
+        
+        // Collect all addresses (issuers + their invitees)
+        console.log('Collecting all related addresses...');
+        const allAddresses = new Set();
+        
+        // Add suspicious issuers
+        suspiciousIssuers.forEach(issuer => {
+            allAddresses.add(issuer);
+        });
+        
+        // Add all invitees of suspicious issuers
+        suspiciousIssuers.forEach(issuer => {
+            const codes = issuerGroups.get(issuer);
+            codes.forEach(code => {
+                allAddresses.add(code.user);
+            });
+        });
+        
+        console.log(`\nAddress collection results:`);
+        console.log(`  - Suspicious issuers: ${suspiciousIssuers.size}`);
+        console.log(`  - Total unique addresses (issuers + invitees): ${allAddresses.size}`);
+        
+        // Create output data (single column, lowercase)
+        const outputData = Array.from(allAddresses)
+            .sort() // Sort alphabetically
+            .map(address => ({ address: address }));
+        
+        // Write to bl3.csv
+        writeCSV('bl3.csv', outputData, ['address']);
+        
+        const elapsedTime = (Date.now() - startTime) / 1000;
+        console.log(`\nAnalysis complete in ${elapsedTime.toFixed(1)} seconds!`);
+        console.log(`${outputData.length} addresses written to bl3.csv`);
+        
+        // Summary statistics
+        const totalInvitees = allAddresses.size - suspiciousIssuers.size;
+        console.log(`\nSummary:`);
+        console.log(`  - Suspicious issuers: ${suspiciousIssuers.size}`);
+        console.log(`  - Their invitees: ${totalInvitees}`);
+        console.log(`  - Total addresses exported: ${allAddresses.size}`);
+        
+    } catch (error) {
+        console.error('Error during analysis:', error.message);
+        console.error('Stack trace:', error.stack);
     }
 }
 
-main();
+// Run the analysis
+detectSuspiciousIssuers();
