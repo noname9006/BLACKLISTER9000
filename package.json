@@ -1,0 +1,31 @@
+{
+  "name": "blacklister9000",
+  "version": "1.0.0",
+  "description": "Cryptocurrency wallet blacklist analysis tools for referral chain detection",
+  "main": "blacklister.js",
+  "type": "module",
+  "scripts": {
+    "start": "node blacklister.js",
+    "analyze": "node blacklister.js",
+    "analyze2": "node blacklister2.js",
+    "analyze3": "node blacklister3.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noname9006/BLACKLISTER9000.git"
+  },
+  "keywords": [
+    "blockchain",
+    "wallet",
+    "blacklist",
+    "cryptocurrency",
+    "referral",
+    "analysis"
+  ],
+  "author": "noname9006",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/noname9006/BLACKLISTER9000/issues"
+  },
+  "homepage": "https://github.com/noname9006/BLACKLISTER9000#readme"
+}
